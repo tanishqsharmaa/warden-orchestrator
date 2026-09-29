@@ -42,6 +42,8 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "integration: marks end-to-end integration tests requiring live storage or external services",
+    "cache: marks tests validating caching layers",
+    "streaming: marks tests validating SSE streaming",
 ]
 
 [tool.ruff]
