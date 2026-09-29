@@ -92,7 +92,7 @@ class TwoTierCacheCoordinator:
                     self._l1_cache.popitem(last=False)
                 self._l1_cache[cache_key] = (cached_obj, now + self.l1_ttl_sec, role)
 
-            if (now - delta) > expiry:
+            if (now + delta) > expiry:
                 return cached_obj, "L2_REFRESH"
             return cached_obj, "L2"
         except Exception as exc:
@@ -193,6 +193,12 @@ class TwoTierCacheCoordinator:
         channel_key = self._get_channel_key(role, query)
         cache_key = format_query_cache_key(role, query)
 
+        # Early check in case computation finished before subscription
+        early_ans, _ = await self.get(role, query)
+        if early_ans is not None:
+            return early_ans
+
+        pubsub = None
         try:
             pubsub = self.redis_client.pubsub()
             await pubsub.subscribe(channel_key)
@@ -213,23 +219,36 @@ class TwoTierCacheCoordinator:
                             self._l1_cache.popitem(last=False)
                         self._l1_cache[cache_key] = (ans, time.time() + self.l1_ttl_sec, role)
 
-                    await pubsub.unsubscribe(channel_key)
                     return ans
                 await asyncio.sleep(0.05)
 
-            await pubsub.unsubscribe(channel_key)
             # Final check in L2 before giving up
             final_ans, _ = await self.get(role, query)
             return final_ans
         except Exception as exc:
             logger.warning("Error waiting for SingleFlight notification: %s", exc)
             return None
+        finally:
+            if pubsub is not None:
+                try:
+                    await pubsub.unsubscribe(channel_key)
+                except Exception:
+                    pass
+                if hasattr(pubsub, "close"):
+                    try:
+                        if asyncio.iscoroutinefunction(pubsub.close):
+                            await pubsub.close()
+                        else:
+                            pubsub.close()
+                    except Exception:
+                        pass
 
-    def flush_l1_role(self, role: str) -> int:
+    async def flush_l1_role(self, role: str) -> int:
         """Flush all in-memory L1 entries matching the specified role."""
         flushed = 0
-        keys_to_remove = [k for k, (_, _, r) in self._l1_cache.items() if r == role]
-        for k in keys_to_remove:
-            del self._l1_cache[k]
-            flushed += 1
+        async with self._l1_lock:
+            keys_to_remove = [k for k, (_, _, r) in self._l1_cache.items() if r == role]
+            for k in keys_to_remove:
+                del self._l1_cache[k]
+                flushed += 1
         return flushed

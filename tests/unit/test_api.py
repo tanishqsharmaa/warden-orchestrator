@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -38,7 +39,7 @@ def mock_deps():
         15,
     ))
 
-    async def mock_stream(q, c, r):
+    async def mock_stream(query, compressed_context, caller_role="Employee", **kwargs):
         yield "Full-time employees receive 12 weeks."
 
     mock_llm.generate_stream = mock_stream
@@ -180,3 +181,64 @@ async def test_health_endpoint():
         data = resp.json()
         assert data["status"] == "HEALTHY"
         assert data["service"] == "warden-orchestrator"
+
+@pytest.mark.asyncio
+async def test_degraded_answer_not_cached(mock_deps):
+    # LLM throws exception
+    mock_deps["llm"].generate_answer = AsyncMock(side_effect=Exception("Azure OpenAI rate limited"))
+    app = create_app(
+        cache_coordinator=mock_deps["cache"],
+        router=mock_deps["router"],
+        retrieval_client=mock_deps["retrieval"],
+        llm_client=mock_deps["llm"],
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.post(
+            "/query",
+            json={"query": "Parental leave policy"},
+            headers={"X-User-Role": "Employee"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "temporarily unavailable" in data["answer"].lower()
+        # MUST NOT cache degraded response
+        mock_deps["cache"].set.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_query_stream_populates_cache(mock_deps):
+    app = create_app(
+        cache_coordinator=mock_deps["cache"],
+        router=mock_deps["router"],
+        retrieval_client=mock_deps["retrieval"],
+        llm_client=mock_deps["llm"],
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.post(
+            "/query/stream",
+            json={"query": "Streaming query for cache test"},
+            headers={"X-User-Role": "Employee"},
+        )
+        assert resp.status_code == 200
+        _ = resp.text
+        await asyncio.sleep(0.01)
+        mock_deps["cache"].set.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_runtime_app_state_precedence(mock_deps):
+    app = create_app()
+    # Simulate main.py lifespan setting app.state.cache
+    live_cache_mock = AsyncMock()
+    live_cache_mock.get = AsyncMock(return_value=(
+        CachedAnswer(answer="From live app.state", citations=[], metrics={"cache_hit": True}),
+        "L2"
+    ))
+    live_cache_mock._l1_cache = {}
+    live_cache_mock.redis_client = MagicMock()
+    app.state.cache = live_cache_mock
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.post("/query", json={"query": "Test"}, headers={"X-User-Role": "Employee"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["answer"] == "From live app.state"
+        live_cache_mock.get.assert_awaited_once()

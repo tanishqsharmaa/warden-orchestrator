@@ -27,9 +27,10 @@ def test_compress_passages_reduces_tokens_and_preserves_citations():
         ),
     ]
 
-    compressed_text, token_count = compressor.compress_passages(passages, target_tokens=800)
+    compressed_text, token_count, retained = compressor.compress_passages(passages, target_tokens=800)
 
     assert token_count <= 800
+    assert len(retained) == 2
     assert "[Doc: DOC-HR-LEAVE-2026, Chunk: 0]" in compressed_text
     assert "[Doc: DOC-HR-LEAVE-2026, Chunk: 1]" in compressed_text
     assert "18 days of paid time off" in compressed_text
@@ -60,7 +61,8 @@ def test_compress_passages_deduplicates_overlapping_sentences():
         ),
     ]
 
-    compressed_text, token_count = compressor.compress_passages(passages, target_tokens=800)
+    compressed_text, token_count, retained = compressor.compress_passages(passages, target_tokens=800)
+    assert len(retained) == 2
     # The shared sentence should only appear once in the extracted context
     count = compressed_text.count("Bereavement leave covers up to 5 consecutive business days for immediate family members.")
     assert count == 1
@@ -68,9 +70,10 @@ def test_compress_passages_deduplicates_overlapping_sentences():
 
 def test_compress_passages_fallback_on_empty():
     compressor = ContextCompressor()
-    text, token_count = compressor.compress_passages([])
+    text, token_count, retained = compressor.compress_passages([])
     assert text == ""
     assert token_count == 0
+    assert retained == []
 
 def test_compress_passages_fallback_when_all_boilerplate():
     compressor = ContextCompressor()
@@ -84,8 +87,9 @@ def test_compress_passages_fallback_when_all_boilerplate():
             calibrated_score=0.5,
         )
     ]
-    text, token_count = compressor.compress_passages(passages, target_tokens=800)
+    text, token_count, retained = compressor.compress_passages(passages, target_tokens=800)
     # Since stripping resulted in empty spans, fallback retains raw chunk safely
     assert "[Doc: DOC-BOILERPLATE, Chunk: 0]" in text
     assert len(text) > 0
     assert token_count > 0
+    assert len(retained) == 1

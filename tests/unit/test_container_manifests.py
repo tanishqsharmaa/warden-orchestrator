@@ -18,5 +18,5 @@ def test_hpa_manifest():
     assert hpa["apiVersion"] == "autoscaling/v2"
     assert hpa["kind"] == "HorizontalPodAutoscaler"
     assert hpa["spec"]["minReplicas"] == 2
-    assert hpa["spec"]["maxReplicas"] == 8
+    assert hpa["spec"]["maxReplicas"] == 6
     assert hpa["spec"]["scaleTargetRef"]["name"] == "warden-orchestrator"

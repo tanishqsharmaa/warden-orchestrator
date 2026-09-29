@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -141,3 +142,50 @@ async def test_raises_rate_limit_error_after_max_retries():
                 pass
         # 1 initial + 2 retries = 3 calls
         assert mock_ai.chat.completions.create.call_count == 3
+
+@pytest.mark.asyncio
+async def test_token_bucket_rate_limiter():
+    from warden_orchestrator.llm_client import TokenBucketRateLimiter
+    limiter = TokenBucketRateLimiter(rate=100.0, capacity=2.0)
+    # Acquire 2 tokens immediately
+    await limiter.acquire(1.0)
+    await limiter.acquire(1.0)
+    # Acquiring third token requires waiting for replenishment
+    start = asyncio.get_event_loop().time()
+    await limiter.acquire(1.0)
+    elapsed = asyncio.get_event_loop().time() - start
+    assert elapsed >= 0.005
+
+@pytest.mark.asyncio
+async def test_generate_stream_no_restart_after_tokens_yielded():
+    client = AzureOpenAIClientWrapper(
+        endpoint="https://mock.openai.azure.com/",
+        api_key="mock-key",
+        deployment="gpt-4.1-mini",
+    )
+
+    async def mock_failing_stream():
+        chunk_mock = MagicMock()
+        choice_mock = MagicMock()
+        choice_mock.delta.content = "Initial token"
+        chunk_mock.choices = [choice_mock]
+        yield chunk_mock
+        # Drop mid-stream
+        err_response = MagicMock()
+        err_response.status_code = 429
+        err_response.headers = {}
+        raise RateLimitError("Mid stream drop", response=err_response, body=None)
+
+    with patch.object(client, "_get_client") as mock_get_client:
+        mock_ai = MagicMock()
+        mock_ai.chat.completions.create = AsyncMock(return_value=mock_failing_stream())
+        mock_get_client.return_value = mock_ai
+
+        received = []
+        with pytest.raises(RateLimitError):
+            async for token in client.generate_stream("query", "context", "Employee"):
+                received.append(token)
+
+        assert received == ["Initial token"]
+        # Must NOT retry from start when tokens were already yielded
+        assert mock_ai.chat.completions.create.call_count == 1

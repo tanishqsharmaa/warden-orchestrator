@@ -69,6 +69,33 @@ Please answer the user's inquiry based exclusively on the context passages provi
 """
 
 
+class TokenBucketRateLimiter:
+    """Proactive token bucket rate limiter to govern Azure OpenAI TPM/RPM consumption."""
+
+    def __init__(self, rate: float = 50.0, capacity: float = 100.0) -> None:
+        self.rate = rate
+        self.capacity = capacity
+        self.tokens = capacity
+        self.last_refill = time.time()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: float = 1.0) -> None:
+        """Acquire tokens from bucket, asynchronously waiting if depleted."""
+        while True:
+            async with self._lock:
+                now = time.time()
+                elapsed = now - self.last_refill
+                self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+                self.last_refill = now
+
+                if self.tokens >= tokens:
+                    self.tokens -= tokens
+                    return
+                deficit = tokens - self.tokens
+                sleep_time = deficit / self.rate
+            await asyncio.sleep(sleep_time)
+
+
 class AzureOpenAIClientWrapper:
     """Wrapper for Azure OpenAI gpt-4.1-mini client with prefix caching and rate-limit backoff."""
 
@@ -81,6 +108,7 @@ class AzureOpenAIClientWrapper:
         max_retries: int = 2,
         base_backoff: float = 0.5,
         max_backoff: float = 2.0,
+        rate_limit_rpm: float = 60.0,
     ) -> None:
         self.endpoint = endpoint
         self.api_key = api_key
@@ -89,6 +117,7 @@ class AzureOpenAIClientWrapper:
         self.max_retries = max_retries
         self.base_backoff = base_backoff
         self.max_backoff = max_backoff
+        self.rate_limiter = TokenBucketRateLimiter(rate=rate_limit_rpm / 60.0 * 50.0, capacity=100.0)
         self._client: Any = None
 
     def get_prompt_prefix(self) -> str:
@@ -102,7 +131,6 @@ class AzureOpenAIClientWrapper:
 
     def _get_client(self) -> Any:
         if self._client is None:
-            # Check if endpoint contains azure domain
             if "openai.azure.com" in self.endpoint:
                 self._client = AsyncAzureOpenAI(
                     azure_endpoint=self.endpoint,
@@ -133,8 +161,11 @@ class AzureOpenAIClientWrapper:
         ]
 
         attempt = 0
+        yielded_any = False
         while True:
             try:
+                if not yielded_any:
+                    await self.rate_limiter.acquire(1.0)
                 response = await client.chat.completions.create(
                     model=self.deployment,
                     messages=messages,
@@ -145,23 +176,19 @@ class AzureOpenAIClientWrapper:
                     if chunk.choices and len(chunk.choices) > 0:
                         delta = chunk.choices[0].delta
                         if delta and delta.content:
+                            yielded_any = True
                             yield delta.content
                 return
-            except RateLimitError as exc:
+            except (RateLimitError, APIConnectionError, TimeoutError) as exc:
+                if yielded_any:
+                    logger.error("Upstream error occurred after tokens were already streamed; aborting without restart: %s", exc)
+                    raise
                 attempt += 1
                 if attempt > self.max_retries:
-                    logger.error("Azure OpenAI rate limit exceeded after %d retries: %s", self.max_retries, exc)
+                    logger.error("Azure OpenAI call failed after %d retries: %s", self.max_retries, exc)
                     raise
                 backoff = min(self.max_backoff, self.base_backoff * (2 ** (attempt - 1)) + random.uniform(0, 0.05))
-                logger.warning("Azure OpenAI 429 throttled. Backing off for %.2fs (attempt %d/%d)", backoff, attempt, self.max_retries)
-                await asyncio.sleep(backoff)
-            except (APIConnectionError, TimeoutError) as exc:
-                attempt += 1
-                if attempt > self.max_retries:
-                    logger.error("Azure OpenAI connection error after %d retries: %s", self.max_retries, exc)
-                    raise
-                backoff = min(self.max_backoff, self.base_backoff * (2 ** (attempt - 1)) + random.uniform(0, 0.05))
-                logger.warning("Azure OpenAI connection fault. Backing off for %.2fs (attempt %d/%d)", backoff, attempt, self.max_retries)
+                logger.warning("Azure OpenAI throttled/error. Backing off for %.2fs (attempt %d/%d)", backoff, attempt, self.max_retries)
                 await asyncio.sleep(backoff)
 
     async def generate_answer(

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, Request
 from fastapi.responses import StreamingResponse
 from warden_shared.errors import RoleInvalidError, RoleMissingError, register_error_handlers
 
@@ -67,26 +67,36 @@ def create_app(
     register_error_handlers(app)
 
     # Assign dependency instances or initialize defaults
-    cache = cache_coordinator or TwoTierCacheCoordinator(
+    default_cache = cache_coordinator or TwoTierCacheCoordinator(
         l1_capacity=app_settings.l1_cache_capacity,
         l1_ttl_sec=app_settings.l1_cache_ttl_sec,
         l2_ttl_sec=app_settings.l2_cache_ttl_sec,
     )
-    retrieval = retrieval_client or RetrievalClient(grpc_target=app_settings.retrieval_grpc_url)
-    intent_router = router or QueryIntentRouter(grpc_target=app_settings.laya_grpc_url)
-    hyde = hyde_expander or HyDEExpander()
-    context_compressor = compressor or ContextCompressor()
-    llm = llm_client or AzureOpenAIClientWrapper(
+    default_retrieval = retrieval_client or RetrievalClient(grpc_target=app_settings.retrieval_grpc_url)
+    default_router = router or QueryIntentRouter(grpc_target=app_settings.laya_grpc_url)
+    default_hyde = hyde_expander or HyDEExpander()
+    default_compressor = compressor or ContextCompressor()
+    default_llm = llm_client or AzureOpenAIClientWrapper(
         endpoint=app_settings.azure_openai_endpoint,
         api_key=app_settings.azure_openai_api_key,
         deployment=app_settings.azure_openai_deployment,
         api_version=app_settings.azure_openai_api_version,
     )
-    sse = sse_generator or SSEStreamGenerator()
+    default_sse = sse_generator or SSEStreamGenerator()
+
+    def get_cache(request: Request) -> TwoTierCacheCoordinator:
+        return getattr(request.app.state, "cache", default_cache)
+
+    def get_retrieval(request: Request) -> RetrievalClient:
+        return getattr(request.app.state, "retrieval_client", default_retrieval)
+
+    def get_router(request: Request) -> QueryIntentRouter:
+        return getattr(request.app.state, "router", default_router)
 
     @app.post("/query", response_model=QueryResponse)
     async def query_endpoint(
         req: QueryRequest,
+        request: Request,
         x_user_role: str | None = Header(None),
     ) -> QueryResponse:
         """Execute synchronous access-controlled query lifecycle."""
@@ -95,9 +105,16 @@ def create_app(
         trace_id = uuid.uuid4().hex
         start_time = time.perf_counter()
 
+        cache = get_cache(request)
+        retrieval = get_retrieval(request)
+        intent_router = get_router(request)
+        hyde = default_hyde
+        context_compressor = default_compressor
+        llm = default_llm
+
         # 1. Two-Tier Cache Check
         cached, tier = await cache.get(role, query)
-        if cached is not None and tier in ("L1", "L2"):
+        if cached is not None and tier in ("L1", "L2", "L2_REFRESH"):
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             return QueryResponse(
                 query=query,
@@ -142,6 +159,7 @@ def create_app(
             selected_choice, _ = await intent_router.classify_intent(query)
             if selected_choice == "OUT_OF_SCOPE_REQUEST":
                 elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                await cache.release_singleflight(role, query, worker_id)
                 return QueryResponse(
                     query=query,
                     caller_role=role,
@@ -163,11 +181,12 @@ def create_app(
             retrieval_ms = (time.perf_counter() - retrieval_start) * 1000.0
 
             # 5. Extractive Context Compression
-            compressed_context, context_tokens = context_compressor.compress_passages(
+            compressed_context, context_tokens, retained_passages = context_compressor.compress_passages(
                 passages, target_tokens=app_settings.compression_target_tokens
             )
 
             # 6. LLM Grounded Answer Generation
+            is_degraded = False
             try:
                 answer, ttft_ms, tokens_generated = await llm.generate_answer(
                     query=query,
@@ -177,12 +196,13 @@ def create_app(
             except Exception as llm_exc:
                 logger.error("LLM generation fault, degrading response: %s", llm_exc)
                 answer = f"{DEGRADED_SERVICE_NOTICE}\n\n" + "\n\n".join(
-                    f"[Doc: {p.doc_id}, Chunk: {p.chunk_index}]\n{p.content}" for p in passages
+                    f"[Doc: {p.doc_id}, Chunk: {p.chunk_index}]\n{p.content}" for p in retained_passages
                 )
                 ttft_ms = 0.0
                 tokens_generated = 0
+                is_degraded = True
 
-            # Build citations
+            # Build citations exclusively from retained passages
             citations = [
                 {
                     "citation_id": i + 1,
@@ -190,21 +210,24 @@ def create_app(
                     "chunk_index": p.chunk_index,
                     "source_url": p.source_url,
                 }
-                for i, p in enumerate(passages)
+                for i, p in enumerate(retained_passages)
             ]
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
-            # 7. Populate Two-Tier Cache & Release Lock
-            cached_obj = CachedAnswer(
-                answer=answer,
-                citations=citations,
-                metrics={"prompt_cache_hit": True},
-                created_at=time.time(),
-                delta_t=elapsed_ms / 1000.0,
-                ttl=app_settings.l2_cache_ttl_sec,
-            )
-            await cache.set(role, query, answer, citations, delta_t=elapsed_ms / 1000.0)
+            # 7. Populate Two-Tier Cache & Release Lock (Only if NOT degraded)
+            cached_obj = None
+            if not is_degraded:
+                cached_obj = CachedAnswer(
+                    answer=answer,
+                    citations=citations,
+                    metrics={"prompt_cache_hit": True},
+                    created_at=time.time(),
+                    delta_t=elapsed_ms / 1000.0,
+                    ttl=app_settings.l2_cache_ttl_sec,
+                )
+                await cache.set(role, query, answer, citations, delta_t=elapsed_ms / 1000.0)
+
             await cache.release_singleflight(role, query, worker_id, answer_obj=cached_obj)
 
             return QueryResponse(
@@ -230,6 +253,7 @@ def create_app(
     @app.post("/query/stream")
     async def query_stream_endpoint(
         req: QueryRequest,
+        request: Request,
         x_user_role: str | None = Header(None),
     ) -> StreamingResponse:
         """Stream query tokens and citations over Server-Sent Events (SSE)."""
@@ -237,16 +261,41 @@ def create_app(
         query = req.query.strip()
         trace_id = uuid.uuid4().hex
 
-        # Check Cache
+        cache = get_cache(request)
+        retrieval = get_retrieval(request)
+        intent_router = get_router(request)
+        hyde = default_hyde
+        context_compressor = default_compressor
+        llm = default_llm
+        sse = default_sse
+
+        # 1. Check Cache
         cached, tier = await cache.get(role, query)
-        if cached is not None and tier in ("L1", "L2"):
+        if cached is not None and tier in ("L1", "L2", "L2_REFRESH"):
             return StreamingResponse(
                 sse.stream_cached(trace_id=trace_id, caller_role=role, cached_answer=cached),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
+        # 2. Acquire SingleFlight Mutex Lock for Stream
+        worker_id = f"worker-stream-{uuid.uuid4().hex[:8]}"
+        acquired = await cache.acquire_singleflight(role, query, worker_id)
+        if not acquired:
+            waited = await cache.wait_for_singleflight(role, query, timeout=3.5)
+            if waited is not None:
+                return StreamingResponse(
+                    sse.stream_cached(trace_id=trace_id, caller_role=role, cached_answer=waited),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+
         async def event_generator():
+            start_time = time.perf_counter()
+            streamed_tokens: list[str] = []
+            retained_passages = []
+            is_degraded = False
+
             try:
                 selected_choice, _ = await intent_router.classify_intent(query)
                 if selected_choice == "OUT_OF_SCOPE_REQUEST":
@@ -270,28 +319,57 @@ def create_app(
                     top_k=30,
                     final_rerank_limit=5,
                 )
-                compressed_context, _ = context_compressor.compress_passages(
+                compressed_context, _, retained_passages = context_compressor.compress_passages(
                     passages, target_tokens=app_settings.compression_target_tokens
                 )
 
+                async def accumulating_token_gen():
+                    async for token in llm.generate_stream(query, compressed_context, caller_role=role):
+                        streamed_tokens.append(token)
+                        yield token
+
                 try:
-                    token_gen = llm.generate_stream(query, compressed_context, caller_role=role)
                     async for chunk in sse.stream_events(
                         trace_id=trace_id,
                         caller_role=role,
                         cache_hit=False,
-                        token_generator=token_gen,
-                        passages=passages,
+                        token_generator=accumulating_token_gen(),
+                        passages=retained_passages,
                     ):
                         yield chunk
                 except Exception as llm_err:
                     logger.warning("LLM stream failure, streaming degraded citations: %s", llm_err)
+                    is_degraded = True
                     async for chunk in sse.stream_degraded(
                         trace_id=trace_id,
                         caller_role=role,
-                        passages=passages,
+                        passages=retained_passages,
                     ):
                         yield chunk
+
+                # If clean stream completion, populate cache
+                if not is_degraded and streamed_tokens:
+                    full_answer = "".join(streamed_tokens)
+                    citations = [
+                        {
+                            "citation_id": i + 1,
+                            "doc_id": p.doc_id,
+                            "chunk_index": p.chunk_index,
+                            "source_url": p.source_url,
+                        }
+                        for i, p in enumerate(retained_passages)
+                    ]
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                    cached_obj = CachedAnswer(
+                        answer=full_answer,
+                        citations=citations,
+                        metrics={"prompt_cache_hit": True},
+                        created_at=time.time(),
+                        delta_t=elapsed_ms / 1000.0,
+                        ttl=app_settings.l2_cache_ttl_sec,
+                    )
+                    await cache.set(role, query, full_answer, citations, delta_t=elapsed_ms / 1000.0)
+                    await cache.release_singleflight(role, query, worker_id, answer_obj=cached_obj)
             except Exception as stream_err:
                 logger.error("Unhandled stream error: %s", stream_err)
                 async for chunk in sse.stream_degraded(
@@ -301,6 +379,8 @@ def create_app(
                     notice=f"Service encountered a temporary error: {stream_err}",
                 ):
                     yield chunk
+            finally:
+                await cache.release_singleflight(role, query, worker_id)
 
         return StreamingResponse(
             event_generator(),
@@ -309,13 +389,14 @@ def create_app(
         )
 
     @app.get("/health")
-    async def health_endpoint() -> dict[str, Any]:
+    async def health_endpoint(request: Request) -> dict[str, Any]:
         """Probes status of internal services and cache connectivity."""
+        active_cache = get_cache(request)
         return {
             "status": "HEALTHY",
             "service": "warden-orchestrator",
-            "l1_cache_size": len(cache._l1_cache),
-            "redis_connected": cache.redis_client is not None,
+            "l1_cache_size": len(active_cache._l1_cache),
+            "redis_connected": active_cache.redis_client is not None,
             "retrieval_grpc_connected": True,
             "laya_grpc_connected": True,
             "azure_openai_configured": bool(app_settings.azure_openai_api_key),

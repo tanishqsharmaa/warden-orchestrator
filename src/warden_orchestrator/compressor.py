@@ -5,7 +5,10 @@ import re
 from warden_orchestrator.models import Passage
 
 BOILERPLATE_PATTERNS = [
-    re.compile(r"(?i)\b(?:confidential|internal\s+use\s+only|all\s+rights\s+reserved|do\s+not\s+distribute|proprietary\s+information|standard\s+disclaimer[:\s]*)[^\.\n]*[\.\n]?", re.IGNORECASE),
+    re.compile(
+        r"(?i)\b(?:confidential|internal\s+use\s+only|all\s+rights\s+reserved|do\s+not\s+distribute|proprietary\s+information|standard\s+disclaimer[:\s]*)[^\.\n]*[\.\n]?",
+        re.IGNORECASE,
+    ),
 ]
 
 
@@ -34,13 +37,17 @@ class ContextCompressor:
         passages: list[Passage],
         target_tokens: int = 800,
         max_tokens: int = 1500,
-    ) -> tuple[str, int]:
-        """Compress retrieved passages, deduplicate overlapping sentences, and format citation anchors."""
+    ) -> tuple[str, int, list[Passage]]:
+        """Compress retrieved passages, deduplicate overlapping sentences, and format citation anchors.
+
+        Returns (compressed_text, token_count, retained_passages).
+        """
         if not passages:
-            return "", 0
+            return "", 0, []
 
         seen_sentences: set[str] = set()
         formatted_blocks: list[str] = []
+        retained_passages: list[Passage] = []
         current_token_count = 0
 
         for p in passages:
@@ -64,7 +71,6 @@ class ContextCompressor:
 
             # Fallback if cleaning or deduplication stripped everything but raw passage existed
             if not retained_sentences and p.content.strip():
-                # Retain raw truncated passage
                 retained_content = p.content.strip()[:300]
             else:
                 retained_content = " ".join(retained_sentences)
@@ -76,15 +82,15 @@ class ContextCompressor:
             block_tokens = self._estimate_tokens(block)
 
             if current_token_count + block_tokens > target_tokens and formatted_blocks:
-                # Target budget reached; stop accumulating further passages
                 break
 
             if current_token_count + block_tokens > max_tokens:
                 break
 
             formatted_blocks.append(block)
+            retained_passages.append(p)
             current_token_count += block_tokens
 
         compressed_text = "\n\n".join(formatted_blocks)
         total_tokens = self._estimate_tokens(compressed_text)
-        return compressed_text, total_tokens
+        return compressed_text, total_tokens, retained_passages

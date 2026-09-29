@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -143,10 +143,48 @@ async def test_flush_l1_role():
     await coord.set("Employee", "q1", "a1", [], delta_t=0.1)
     await coord.set("Manager", "q1", "a1_mgr", [], delta_t=0.1)
 
-    flushed = coord.flush_l1_role("Employee")
+    flushed = await coord.flush_l1_role("Employee")
     assert flushed == 1
 
     res_emp, _ = await coord.get("Employee", "q1")
     res_mgr, _ = await coord.get("Manager", "q1")
     assert res_emp is None
     assert res_mgr is not None
+
+@pytest.mark.asyncio
+async def test_xfetch_early_refresh_trigger():
+    mock_redis = AsyncMock()
+    now = time.time()
+    # Key expires in 1 second; delta_t = 2.0s -> (now + delta) will exceed expiry when U is small
+    envelope = {
+        "answer": "Expiring soon",
+        "citations": [],
+        "metrics": {},
+        "created_at": now - 1799,
+        "delta_t": 2.0,
+        "ttl": 1800,
+        "expiry": now + 1.0,
+    }
+    mock_redis.get = AsyncMock(return_value=json.dumps(envelope))
+
+    coord = TwoTierCacheCoordinator(l1_capacity=10, l1_ttl_sec=60, redis_client=mock_redis, beta=1.0)
+    with patch("random.random", return_value=0.1):
+        res, tier = await coord.get("Employee", "Query near expiry")
+    assert res is not None
+    assert res.answer == "Expiring soon"
+    assert tier == "L2_REFRESH"
+
+@pytest.mark.asyncio
+async def test_wait_for_singleflight_pubsub_cleanup():
+    mock_redis = AsyncMock()
+    mock_pubsub = AsyncMock()
+    mock_pubsub.get_message = AsyncMock(return_value=None)
+    mock_redis.pubsub = MagicMock(return_value=mock_pubsub)
+    mock_redis.get = AsyncMock(return_value=None)
+
+    coord = TwoTierCacheCoordinator(l1_capacity=10, l1_ttl_sec=60, redis_client=mock_redis)
+    result = await coord.wait_for_singleflight("Employee", "Test query", timeout=0.1)
+
+    assert result is None
+    mock_pubsub.unsubscribe.assert_awaited()
+    mock_pubsub.close.assert_awaited()
