@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "warden-orchestrator"
+version = "1.0.0"
+description = "Project Warden Autonomous Query Lifecycle Agent & LLM Orchestration Subsystem (Tier 5)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "pydantic-settings>=2.2.0",
+    "grpcio>=1.62.0",
+    "grpcio-tools>=1.62.0",
+    "protobuf>=4.25.0",
+    "httpx>=0.27.0",
+    "openai>=1.20.0",
+    "redis>=5.0.0",
+    "opentelemetry-api>=1.24.0",
+    "opentelemetry-sdk>=1.24.0",
+    "warden-shared>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/warden_orchestrator"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-v --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: marks end-to-end integration tests requiring live storage or external services",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
