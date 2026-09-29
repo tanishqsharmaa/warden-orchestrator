@@ -69,7 +69,9 @@ class RetrievalClient:
                 )
             return passages
         except grpc.RpcError as exc:
-            logger.error("Retrieval gRPC call failed: code=%s, details=%s", exc.code(), exc.details())
+            code = exc.code() if hasattr(exc, "code") else "UNKNOWN"
+            details = exc.details() if hasattr(exc, "details") else str(exc)
+            logger.error("Retrieval gRPC call failed: code=%s, details=%s", code, details)
             raise
 
     async def close(self) -> None:
