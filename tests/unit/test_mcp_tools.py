@@ -1,7 +1,10 @@
-import pytest
 from unittest.mock import AsyncMock
-from warden_orchestrator.models import Passage
+
+import pytest
+
 from warden_orchestrator.mcp_tools import MCPToolAdapter
+from warden_orchestrator.models import Passage
+
 
 def test_mcp_tool_definitions():
     adapter = MCPToolAdapter(retrieval_client=AsyncMock(), router=AsyncMock())

@@ -1,0 +1,41 @@
+FROM python:3.12.2-slim-bookworm AS base
+
+# Install system dependencies including curl for health probes
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-privileged user (uid 10001, gid 10001) per security standard
+RUN groupadd -g 10001 appgroup && \
+    useradd -u 10001 -g appgroup -s /bin/bash -m appuser
+
+WORKDIR /app
+
+# Install uv for high-speed dependency resolution
+COPY --from=ghcr.io/astral-sh/uv:0.4.18 /uv /uvx /bin/
+
+# Copy and install shared foundation library
+COPY warden-shared/ /warden-shared/
+RUN uv pip install --system -e /warden-shared
+
+# Copy dependencies and manifests
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+# Install application package
+RUN uv pip install --system -e .
+
+# Ensure non-root ownership
+RUN chown -R 10001:10001 /app
+
+# Switch to non-privileged user
+USER 10001:10001
+
+# Expose HTTP REST application and SSE streaming port
+EXPOSE 8000
+
+HEALTHCHECK --interval=5s --timeout=3s --retries=5 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["python", "-m", "warden_orchestrator.main"]

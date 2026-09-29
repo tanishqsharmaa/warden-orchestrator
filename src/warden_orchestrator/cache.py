@@ -1,15 +1,16 @@
 """Two-tier cache coordinator for warden-orchestrator."""
 
 import asyncio
-from collections import OrderedDict
 import json
 import logging
 import math
 import random
 import time
+from collections import OrderedDict
 from typing import Any
 
 from warden_shared.cache import format_query_cache_key
+
 from warden_orchestrator.models import CachedAnswer
 
 logger = logging.getLogger("warden.orchestrator.cache")
@@ -218,8 +219,8 @@ class TwoTierCacheCoordinator:
 
             await pubsub.unsubscribe(channel_key)
             # Final check in L2 before giving up
-            ans, _ = await self.get(role, query)
-            return ans
+            final_ans, _ = await self.get(role, query)
+            return final_ans
         except Exception as exc:
             logger.warning("Error waiting for SingleFlight notification: %s", exc)
             return None

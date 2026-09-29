@@ -1,8 +1,10 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-import grpc
 
-from warden_orchestrator.router import QueryIntentRouter, DEFAULT_INTENT_CHOICES
+import grpc
+import pytest
+
+from warden_orchestrator.router import QueryIntentRouter
+
 
 @pytest.mark.asyncio
 async def test_classify_intent_success():

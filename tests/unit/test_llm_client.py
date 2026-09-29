@@ -1,9 +1,10 @@
-import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from openai import RateLimitError, APIConnectionError
+
+import pytest
+from openai import RateLimitError
 
 from warden_orchestrator.llm_client import AzureOpenAIClientWrapper
+
 
 def test_system_prompt_prefix_exceeds_1024_tokens():
     client = AzureOpenAIClientWrapper(

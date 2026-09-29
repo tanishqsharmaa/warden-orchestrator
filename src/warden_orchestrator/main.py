@@ -1,8 +1,7 @@
 """Main entrypoint and lifespan runner for warden-orchestrator."""
 
-import asyncio
-from contextlib import asynccontextmanager
 import logging
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 import uvicorn
@@ -10,9 +9,9 @@ from fastapi import FastAPI
 from warden_shared.cache import RedisConnectionManager
 from warden_shared.logging import configure_logging
 
-from warden_orchestrator.config import get_settings
 from warden_orchestrator.api import create_app
 from warden_orchestrator.cache import TwoTierCacheCoordinator
+from warden_orchestrator.config import get_settings
 from warden_orchestrator.retrieval_client import RetrievalClient
 from warden_orchestrator.router import QueryIntentRouter
 

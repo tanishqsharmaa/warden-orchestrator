@@ -1,6 +1,6 @@
-import pytest
-from warden_orchestrator.models import Passage
 from warden_orchestrator.compressor import ContextCompressor
+from warden_orchestrator.models import Passage
+
 
 def test_compress_passages_reduces_tokens_and_preserves_citations():
     compressor = ContextCompressor()
@@ -40,7 +40,7 @@ def test_compress_passages_reduces_tokens_and_preserves_citations():
 def test_compress_passages_deduplicates_overlapping_sentences():
     compressor = ContextCompressor()
     shared_sentence = "Bereavement leave covers up to 5 consecutive business days for immediate family members."
-    
+
     passages = [
         Passage(
             doc_id="DOC-HR-LEAVE-2026",

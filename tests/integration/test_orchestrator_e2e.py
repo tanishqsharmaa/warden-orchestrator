@@ -1,16 +1,17 @@
-import asyncio
 import time
-import pytest
-from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from httpx import ASGITransport, AsyncClient
 from openai import RateLimitError
 
-from warden_orchestrator.models import Passage, CachedAnswer
 from warden_orchestrator.api import create_app
 from warden_orchestrator.cache import TwoTierCacheCoordinator
 from warden_orchestrator.compressor import ContextCompressor
 from warden_orchestrator.hyde import HyDEExpander
-from warden_orchestrator.streaming import SSEStreamGenerator, DEGRADED_SERVICE_NOTICE
+from warden_orchestrator.models import Passage
+from warden_orchestrator.streaming import DEGRADED_SERVICE_NOTICE, SSEStreamGenerator
+
 
 @pytest.fixture
 def integrated_app():

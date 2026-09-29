@@ -1,14 +1,16 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-import grpc
 
-from warden_orchestrator.retrieval_client import RetrievalClient
+import grpc
+import pytest
+
 from warden_orchestrator.models import Passage
+from warden_orchestrator.retrieval_client import RetrievalClient
+
 
 @pytest.mark.asyncio
 async def test_retrieval_client_success():
     client = RetrievalClient(grpc_target="localhost:50051")
-    
+
     mock_passage = MagicMock()
     mock_passage.doc_id = "DOC-HR-LEAVE-2026"
     mock_passage.chunk_index = 2

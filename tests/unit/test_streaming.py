@@ -1,8 +1,8 @@
-import asyncio
-import json
 import pytest
-from warden_orchestrator.models import Passage, CachedAnswer
-from warden_orchestrator.streaming import SSEStreamGenerator, DEGRADED_SERVICE_NOTICE
+
+from warden_orchestrator.models import CachedAnswer, Passage
+from warden_orchestrator.streaming import DEGRADED_SERVICE_NOTICE, SSEStreamGenerator
+
 
 @pytest.mark.asyncio
 async def test_sse_event_sequence():

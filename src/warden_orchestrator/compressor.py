@@ -1,7 +1,7 @@
 """Extractive context window compressor for warden-orchestrator."""
 
 import re
-from typing import Any
+
 from warden_orchestrator.models import Passage
 
 BOILERPLATE_PATTERNS = [

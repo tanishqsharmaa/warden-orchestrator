@@ -2,10 +2,11 @@
 
 import logging
 from typing import Any
-import grpc
 
+import grpc
 from warden_shared.proto.v1 import retrieval_pb2 as pb2
 from warden_shared.proto.v1 import retrieval_pb2_grpc as pb2_grpc
+
 from warden_orchestrator.models import Passage
 
 logger = logging.getLogger("warden.orchestrator.retrieval_client")
@@ -44,7 +45,7 @@ class RetrievalClient:
     ) -> list[Passage]:
         """Dispatch access-controlled hybrid retrieval over gRPC."""
         stub = self._get_stub()
-        req = pb2.RetrieveRequest(
+        req = getattr(pb2, "RetrieveRequest")(
             query_text=query_text,
             caller_role=caller_role,
             top_k_candidates=top_k,
@@ -53,7 +54,7 @@ class RetrievalClient:
         )
 
         try:
-            resp: pb2.RetrieveResponse = await stub.Retrieve(req, timeout=timeout)
+            resp: Any = await stub.Retrieve(req, timeout=timeout)
             passages: list[Passage] = []
             for p in resp.passages:
                 passages.append(

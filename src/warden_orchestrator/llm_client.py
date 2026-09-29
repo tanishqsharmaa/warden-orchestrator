@@ -5,7 +5,8 @@ import logging
 import random
 import time
 from typing import Any, AsyncGenerator
-from openai import AsyncAzureOpenAI, AsyncOpenAI, RateLimitError, APIConnectionError
+
+from openai import APIConnectionError, AsyncAzureOpenAI, AsyncOpenAI, RateLimitError
 
 logger = logging.getLogger("warden.orchestrator.llm_client")
 

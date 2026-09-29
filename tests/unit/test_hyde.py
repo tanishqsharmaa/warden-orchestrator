@@ -1,12 +1,13 @@
 import time
-import pytest
+
 from warden_orchestrator.hyde import HyDEExpander
+
 
 def test_hyde_expands_query_with_contextual_keywords():
     expander = HyDEExpander()
     query = "bereavement leave policy"
     expanded = expander.expand_query(query, caller_role="Employee")
-    
+
     assert "bereavement" in expanded.lower()
     assert "leave" in expanded.lower()
     assert "policy" in expanded.lower()

@@ -2,8 +2,8 @@
 
 import logging
 from typing import Any
-import grpc
 
+import grpc
 from warden_shared.proto.v1 import laya_pb2 as pb2
 from warden_shared.proto.v1 import laya_pb2_grpc as pb2_grpc
 
@@ -47,10 +47,10 @@ class QueryIntentRouter:
         """Classify incoming query intent. Returns (selected_choice, confidence_distribution)."""
         candidate_choices = choices or DEFAULT_INTENT_CHOICES
         stub = self._get_stub()
-        req = pb2.RouteRequest(query=query, choices=candidate_choices)
+        req = getattr(pb2, "RouteRequest")(query=query, choices=candidate_choices)
 
         try:
-            resp: pb2.RouteResponse = await stub.Route(req, timeout=timeout)
+            resp: Any = await stub.Route(req, timeout=timeout)
             return resp.selected_choice, dict(resp.confidence_distribution)
         except grpc.RpcError as exc:
             code = exc.code() if hasattr(exc, "code") else "UNKNOWN"

@@ -2,7 +2,8 @@
 
 import json
 from typing import AsyncGenerator
-from warden_orchestrator.models import Passage, CachedAnswer
+
+from warden_orchestrator.models import CachedAnswer, Passage
 
 DEGRADED_SERVICE_NOTICE = (
     "Generative synthesis is temporarily unavailable due to upstream provider rate limits. "

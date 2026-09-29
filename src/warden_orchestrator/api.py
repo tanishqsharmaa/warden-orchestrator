@@ -1,32 +1,29 @@
 """FastAPI REST application for warden-orchestrator."""
 
-import asyncio
-from datetime import datetime, timezone
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi import FastAPI, Header
 from fastapi.responses import StreamingResponse
-from warden_shared.errors import register_error_handlers, RoleMissingError, RoleInvalidError
-from warden_shared.cache import RedisConnectionManager
+from warden_shared.errors import RoleInvalidError, RoleMissingError, register_error_handlers
 
+from warden_orchestrator.cache import TwoTierCacheCoordinator
+from warden_orchestrator.compressor import ContextCompressor
 from warden_orchestrator.config import Settings, get_settings
+from warden_orchestrator.hyde import HyDEExpander
+from warden_orchestrator.llm_client import AzureOpenAIClientWrapper
 from warden_orchestrator.models import (
     CachedAnswer,
-    Passage,
     QueryMetrics,
     QueryRequest,
     QueryResponse,
 )
-from warden_orchestrator.cache import TwoTierCacheCoordinator
 from warden_orchestrator.retrieval_client import RetrievalClient
 from warden_orchestrator.router import QueryIntentRouter
-from warden_orchestrator.hyde import HyDEExpander
-from warden_orchestrator.compressor import ContextCompressor
-from warden_orchestrator.llm_client import AzureOpenAIClientWrapper
-from warden_orchestrator.streaming import SSEStreamGenerator, DEGRADED_SERVICE_NOTICE
+from warden_orchestrator.streaming import DEGRADED_SERVICE_NOTICE, SSEStreamGenerator
 
 logger = logging.getLogger("warden.orchestrator.api")
 
